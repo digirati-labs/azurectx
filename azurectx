@@ -1,0 +1,54 @@
+#!/bin/bash
+
+if [ -z "$AZURE_TENANT_NAMES" ]; then
+    AZURE_TENANT_NAMES="$HOME/.az_tenants"
+fi
+
+function __azure_ctx() {
+    local -A tenant_names
+    local accounts
+    local accounts_json
+    local current_tenant
+    local current_subscription_id
+
+    if [ -f "$AZURE_TENANT_NAMES" ]; then
+        source "$AZURE_TENANT_NAMES"
+    fi
+
+    current_tenant=$(az ad signed-in-user show --query 'userPrincipalName' | cut -d '@' -f 2 | sed 's/\"//')
+    accounts_json=$(az account list --all --output json)
+
+    for k in $(jq 'keys | .[]' <<<"$accounts_json"); do
+        IFS=$'\n' read -r -d '' id name tenant_id enabled <<<"$(jq -r ".[$k] | .id,.name,.tenantId,.isDefault" <<<"$accounts_json")"
+
+        if [ "$enabled" = "true" ]; then
+            tenant_names[$tenant_id]=$current_tenant
+            current_subscription_id="$subscription_id"
+        fi
+
+        local display_name
+        if [ -n "${tenant_names[$tenant_id]}" ]; then
+            display_name="$name@${tenant_names[$tenant_id]}"
+        else
+            display_name="$name@$tenant_id"
+        fi
+
+        accounts+=("$id|$display_name")
+    done
+
+    declare -p tenant_names >"$AZURE_TENANT_NAMES"
+
+    selection=$(printf '%s\n' "${accounts[@]}" | fzf --delimiter="|" --with-nth=38.. --ansi --no-preview)
+    subscription_id=$(cut -d'|' -f1 <<<"$selection")
+    subscription_name=$(cut -d'|' -f2 <<<"$selection")
+
+    if [ "$subscription_id" == "$current_subscription_id" ]; then
+        echo "No change to subscription id."
+    else
+        echo "Switching to $subscription_name"
+        az account set --subscription "$subscription_id"
+    fi
+}
+
+__azure_ctx
+
